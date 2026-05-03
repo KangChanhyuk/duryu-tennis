@@ -16,10 +16,8 @@ def load_members():
         df = pd.read_csv(MEMBERS_FILE).fillna("")
         for c in ['4월 포인트', '3월 포인트', '부과점', '랭킹']:
             df[c] = pd.to_numeric(df.get(c, 0), errors='coerce').fillna(0).astype(int)
-        df['변동치'] = df['4월 포인트'] - df['3월 포인트']
-        df['상태'] = df['변동치'].apply(lambda x: "🔺" if x > 0 else ("🔻" if x < 0 else "—"))
         return df
-    return pd.DataFrame(columns=['랭킹', '상태', '성명', '4월 포인트', '3월 포인트', '부과점', '비고'])
+    return pd.DataFrame(columns=['랭킹', '성명', '4월 포인트', '3월 포인트', '부과점', '비고'])
 
 def save_data(df, path):
     df.to_csv(path, index=False, encoding='utf-8-sig')
@@ -31,7 +29,7 @@ st.markdown("""
     h1, h2, h3 { text-align: center; color: #002366; }
     .match-card { border: 1px solid #ddd; border-radius: 12px; padding: 15px; margin-bottom: 15px; background: #ffffff; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
     .vs-text { font-size: 1.2rem; font-weight: bold; color: #ff4b4b; text-align: center; display: block; padding-top: 10px; }
-    .matrix-table { margin-bottom: 30px; }
+    .stTable { font-size: 0.9rem; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -54,7 +52,7 @@ MATCH_FILE = os.path.join(EV_PATH, "matches.csv") if EV_PATH else None
 if menu == "전체랭킹":
     st.markdown("<h1>🥇 전체 회원 랭킹</h1>", unsafe_allow_html=True)
     df = load_members().sort_values('랭킹')
-    st.dataframe(df[['랭킹', '상태', '성명', '4월 포인트', '부과점', '비고']], use_container_width=True, hide_index=True)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
 elif menu == "대진 및 경기현황":
     if not MATCH_FILE: st.info("대회를 선택해주세요.")
@@ -67,24 +65,23 @@ elif menu == "대진 및 경기현황":
             with tabs[i]:
                 g_df = m_df[m_df['그룹'] == g]
                 
-                # [추가] 상단 매트릭스 대진표
+                # 매트릭스 대진표 (사선 표시 추가)
                 st.markdown("### 📊 조별 대진표 (매트릭스)")
                 players = sorted(list(set(g_df['팀A'].tolist() + g_df['팀B'].tolist())))
-                matrix = pd.DataFrame("-", index=players, columns=players)
+                matrix = pd.DataFrame("", index=players, columns=players)
+                for p in players:
+                    matrix.at[p, p] = " \\ " # 자기 자신은 사선 표시
+                
                 for _, row in g_df.iterrows():
-                    if row['완료'] == 1:
-                        score = f"{int(row['A점수'])}:{int(row['B점수'])}"
-                        matrix.at[row['팀A'], row['팀B']] = score
-                        matrix.at[row['팀B'], row['팀A']] = f"{int(row['B점수'])}:{int(row['A점수'])}"
+                    score = f"{int(row['A점수'])}:{int(row['B점수'])}" if row['완료'] == 1 else "•"
+                    matrix.at[row['팀A'], row['팀B']] = score
+                    matrix.at[row['팀B'], row['팀A']] = score[::-1] if row['완료'] == 1 else "•"
                 st.table(matrix)
                 
                 st.divider()
-                st.markdown("### 🎾 경기 순서 (2코트 동시 진행)")
-                
-                # 경기 카드 출력
+                st.markdown("### 🎾 경기 순서 (2코트 최적화)")
                 for idx, row in g_df.iterrows():
                     st.markdown("<div class='match-card'>", unsafe_allow_html=True)
-                    st.markdown(f"<p style='text-align:center; color:gray; font-weight:bold;'>MATCH {row['순서']}</p>", unsafe_allow_html=True)
                     c1, c2, c3, c4, c5 = st.columns([3, 1, 0.5, 1, 3])
                     c1.markdown(f"<h3 style='text-align:right;'>{row['팀A']}</h3>", unsafe_allow_html=True)
                     s_a = c2.number_input("", 0, 10, int(row['A점수']), key=f"sA_{idx}", label_visibility="collapsed")
@@ -92,36 +89,63 @@ elif menu == "대진 및 경기현황":
                     s_b = c4.number_input("", 0, 10, int(row['B점수']), key=f"sB_{idx}", label_visibility="collapsed")
                     c5.markdown(f"<h3 style='text-align:left;'>{row['팀B']}</h3>", unsafe_allow_html=True)
                     if st.button(f"결과 저장 (M-{row['순서']})", key=f"btn_{idx}", use_container_width=True):
-                        m_df.loc[idx, ['A점수', 'B점수', '완료']] = [s_a, s_b, 1]
+                        m_df.loc[m_df.index[m_df['순서'] == row['순서']], ['A점수', 'B점수', '완료']] = [s_a, s_b, 1]
                         save_data(m_df, MATCH_FILE); st.rerun()
                     st.markdown("</div>", unsafe_allow_html=True)
 
 elif menu == "관리자 설정" and is_admin:
-    # (앞선 로직 유지하며 대진 생성 알고리즘만 강화)
     st.markdown("<h1>⚙️ 관리자 설정</h1>", unsafe_allow_html=True)
-    t1, t2, t3 = st.tabs(["📁 대회 관리", "⚔️ 참가자 및 대진 생성", "📈 결과 반영"])
+    t1, t2, t3 = st.tabs(["📁 대회 관리", "⚔️ 대진 생성", "📈 결과 반영"])
     
-    with t2:
-        # ... (명단 및 그룹 설정 UI 생략 - 이전과 동일)
-        if st.button("⚔️ 대진표 생성 (연속 경기 방지 로직 적용)"):
-            # [핵심] 연속 경기 방지 알고리즘 적용 부분
-            def optimize_order(matches):
-                if not matches: return []
-                ordered = [matches.pop(0)]
-                while matches:
-                    last_match = ordered[-1]
-                    last_players = set(last_match['팀A'].split('/') + last_match['팀B'].split('/'))
-                    
-                    # 이전 경기와 겹치지 않는 경기 찾기
-                    found = False
-                    for i, m in enumerate(matches):
-                        current_players = set(m['팀A'].split('/') + m['팀B'].split('/'))
-                        if not (last_players & current_players):
-                            ordered.append(matches.pop(i))
-                            found = True
-                            break
-                    if not found: # 억지로라도 하나 넣기
-                        ordered.append(matches.pop(0))
-                return ordered
+    with t1:
+        new_ev = st.text_input("새 대회 명칭")
+        if st.button("대회 생성"):
+            os.makedirs(os.path.join(DATA_DIR, new_ev), exist_ok=True); st.rerun()
 
-            # 위 함수를 사용하여 그룹별 matches 생성 후 저장...
+    with t2:
+        raw_names = st.text_area("명단 붙여넣기 (쉼표/공백/엔터)")
+        p_list = [n.strip() for n in re.split(r'[,\s\n]+', raw_names) if n.strip()]
+        all_mems = load_members()
+        p_ranked = all_mems[all_mems['성명'].isin(p_list)].sort_values('랭킹')
+        final_p = p_ranked['성명'].tolist() + [n for n in p_list if n not in p_ranked['성명'].tolist()]
+        
+        g_cnt = st.number_input("그룹 수", 1, 10, 1)
+        configs = []
+        cur = 0
+        for i in range(g_cnt):
+            g_label = chr(65 + i)
+            col1, col2 = st.columns(2)
+            sz = col1.number_input(f"{g_label}그룹 인원", 0, len(final_p), key=f"sz_{g_label}")
+            md = col2.selectbox(f"{g_label} 방식", ["단식", "고정페어 복식", "KDK 복식"], key=f"md_{g_label}")
+            configs.append({'label': g_label, 'members': final_p[cur:cur+sz], 'mode': md})
+            cur += sz
+
+        if st.button("⚔️ 최적화 대진 생성"):
+            all_m = []
+            for cfg in configs:
+                m_list = []
+                if cfg['mode'] == "고정페어 복식":
+                    pairs, tmp = [], cfg['members'].copy()
+                    while len(tmp) >= 2: pairs.append(f"{tmp.pop(0)}/{tmp.pop(-1)}")
+                    raw = list(itertools.combinations(pairs, 2))
+                else: # 단식 및 KDK 로직
+                    raw = list(itertools.combinations(cfg['members'], 2))
+                
+                # 연속 경기 방지 최적화 로직
+                random.shuffle(raw)
+                ordered = []
+                if raw:
+                    ordered.append(raw.pop(0))
+                    while raw:
+                        last = set(re.split(r'[/]', ordered[-1][0]) + re.split(r'[/]', ordered[-1][1]))
+                        found = False
+                        for i, m in enumerate(raw):
+                            curr = set(re.split(r'[/]', m[0]) + re.split(r'[/]', m[1]))
+                            if not (last & curr):
+                                ordered.append(raw.pop(i)); found = True; break
+                        if not found: ordered.append(raw.pop(0))
+                
+                for idx, c in enumerate(ordered):
+                    all_m.append({"그룹": cfg['label'], "순서": idx+1, "팀A": c[0], "팀B": c[1], "A점수": 0, "B점수": 0, "완료": 0})
+            
+            save_data(pd.DataFrame(all_m), MATCH_FILE); st.success("생성 완료!")
