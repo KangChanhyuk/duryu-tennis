@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import random
 import os
 
 st.set_page_config(layout="wide")
@@ -7,31 +8,58 @@ st.set_page_config(layout="wide")
 RANK_FILE = "ranking_master.csv"
 
 # ----------------------
-# 상태 초기화
+# 상태
 # ----------------------
 if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
-
-if "players" not in st.session_state:
-    st.session_state.players = []
-
-if "matches" not in st.session_state:
-    st.session_state.matches = []
-
+if "players_all" not in st.session_state:
+    st.session_state.players_all = []
+if "players_selected" not in st.session_state:
+    st.session_state.players_selected = []
+if "groups" not in st.session_state:
+    st.session_state.groups = []
+if "schedule" not in st.session_state:
+    st.session_state.schedule = {}
+if "scores" not in st.session_state:
+    st.session_state.scores = {}
 if "result_df" not in st.session_state:
     st.session_state.result_df = None
+if "match_type" not in st.session_state:
+    st.session_state.match_type = "단식"
 
 # ----------------------
-# 사이드바 메뉴
+# 모바일 UI 스타일
+# ----------------------
+st.markdown("""
+<style>
+button {
+    width:100%;
+    height:50px;
+    font-size:18px;
+    border-radius:12px;
+}
+.block {
+    padding:15px;
+    margin:8px;
+    border-radius:12px;
+    background:#f0f2f6;
+    text-align:center;
+    font-size:18px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# ----------------------
+# 사이드바
 # ----------------------
 with st.sidebar:
-    st.title("🎾 두류테니스클럽")
+    st.title("🎾 두류테니스")
 
-    menu = st.radio("메뉴 선택", [
-        "🏆 두류랭킹",
-        "👥 참가자 명단",
-        "🎮 대진 및 진행",
-        "📊 경기 결과",
+    menu = st.radio("메뉴", [
+        "🏆 랭킹",
+        "👥 참가자",
+        "🎮 대진",
+        "📊 결과",
         "🔐 관리자"
     ])
 
@@ -40,92 +68,35 @@ with st.sidebar:
         if st.button("로그인"):
             if pw == "0502":
                 st.session_state.is_admin = True
-                st.success("관리자 로그인 성공")
-            else:
-                st.error("비밀번호 오류")
+                st.success("관리자 모드")
 
 # ----------------------
-# 랭킹 파일 로드 (엑셀 완전 대응)
-# ----------------------
-def load_ranking_file(uploaded_file):
-    if uploaded_file.name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-    else:
-        df = pd.read_excel(uploaded_file)
-
-    df.columns = df.columns.str.strip()
-
-    current_col = None
-    prev_col = None
-
-    for col in df.columns:
-        if "랭킹포인트" in col and "최종" in col:
-            current_col = col
-        elif "랭킹포인트" in col and "전" in col:
-            prev_col = col
-
-    if current_col is None:
-        st.error("❌ '현재 랭킹포인트' 컬럼 없음")
-        st.stop()
-
-    rename_map = {}
-    if "성명" in df.columns:
-        rename_map["성명"] = "이름"
-
-    rename_map[current_col] = "현재포인트"
-    df = df.rename(columns=rename_map)
-
-    if prev_col:
-        df = df.rename(columns={prev_col: "이전포인트"})
-    else:
-        df["이전포인트"] = df["현재포인트"]
-
-    if "부과점" not in df.columns:
-        df["부과점"] = ""
-
-    return df
-
-# ----------------------
-# 랭킹 불러오기
+# 랭킹 로드
 # ----------------------
 def load_rank():
     if os.path.exists(RANK_FILE):
         return pd.read_csv(RANK_FILE)
-    return pd.DataFrame(columns=["이름","현재포인트","이전포인트","부과점"])
+    return pd.DataFrame(columns=["이름","현재포인트","이전포인트"])
 
 # ----------------------
-# 1️⃣ 두류랭킹
+# 1️⃣ 랭킹
 # ----------------------
-if menu == "🏆 두류랭킹":
+if menu == "🏆 랭킹":
 
-    st.title("🏆 두류 랭킹")
-
-    uploaded = st.file_uploader("📂 랭킹 업로드 (csv/xlsx)")
-
-    if uploaded:
-        df = load_ranking_file(uploaded)
-        df.to_csv(RANK_FILE, index=False, encoding="utf-8-sig")
-        st.success("랭킹 업로드 완료")
+    st.title("🏆 랭킹")
 
     rank_df = load_rank()
 
-    if len(rank_df) == 0:
-        st.warning("랭킹 없음")
-    else:
-        # 변동 계산 (핵심 정확 로직)
-        rank_df["변동값"] = rank_df["현재포인트"] - rank_df["이전포인트"]
+    if len(rank_df) > 0:
+        rank_df["변동"] = rank_df["현재포인트"] - rank_df["이전포인트"]
 
         def arrow(x):
-            if x > 0:
-                return f"⬆ {x}"
-            elif x < 0:
-                return f"⬇ {abs(x)}"
-            else:
-                return "-"
+            if x > 0: return f"⬆ {x}"
+            elif x < 0: return f"⬇ {abs(x)}"
+            else: return "-"
 
-        rank_df["변동"] = rank_df["변동값"].apply(arrow)
+        rank_df["변동"] = rank_df["변동"].apply(arrow)
 
-        # 정렬
         rank_df = rank_df.sort_values("현재포인트", ascending=False).reset_index(drop=True)
         rank_df["순위"] = rank_df.index + 1
 
@@ -134,106 +105,196 @@ if menu == "🏆 두류랭킹":
 # ----------------------
 # 2️⃣ 참가자
 # ----------------------
-elif menu == "👥 참가자 명단":
+elif menu == "👥 참가자":
 
     st.title("👥 참가자")
 
-    players_input = st.text_area("쉼표로 입력")
+    if st.session_state.is_admin:
+        raw = st.text_area("참가자 입력")
+        if st.button("등록"):
+            st.session_state.players_all = [p.strip() for p in raw.split(",") if p.strip()]
 
-    if st.button("저장"):
-        st.session_state.players = [p.strip() for p in players_input.split(",") if p.strip()]
-        st.success("저장 완료")
+    selected = []
+    cols = st.columns(4)
 
-    st.write("참가자:", st.session_state.players)
+    for i,p in enumerate(st.session_state.players_all):
+        with cols[i%4]:
+            if st.checkbox(p, value=True):
+                selected.append(p)
+
+    if st.button("전체 선택"):
+        selected = st.session_state.players_all.copy()
+
+    st.session_state.players_selected = selected
+    st.write("선택:", len(selected))
+
+# ----------------------
+# 그룹 생성 (랭킹 기반)
+# ----------------------
+def make_groups(players):
+    rank_df = load_rank()
+    rank_map = {row["이름"]: row["현재포인트"] for _, row in rank_df.iterrows()}
+
+    players_sorted = sorted(players, key=lambda x: rank_map.get(x,0), reverse=True)
+
+    group_count = 2 if len(players) <= 8 else 3
+    groups = [[] for _ in range(group_count)]
+
+    for i,p in enumerate(players_sorted):
+        idx = i % group_count
+        if (i // group_count) % 2 == 1:
+            idx = group_count - 1 - idx
+        groups[idx].append(p)
+
+    return groups
+
+# ----------------------
+# 페어 생성
+# ----------------------
+def make_pairs(players, mode):
+    pairs = []
+
+    if mode == "고정페어":
+        sorted_players = players.copy()
+        n = len(sorted_players)
+        for i in range(n//2):
+            pairs.append((sorted_players[i], sorted_players[n-1-i]))
+
+    elif mode == "KDK":
+        temp = players.copy()
+        random.shuffle(temp)
+        for i in range(0, len(temp), 2):
+            if i+1 < len(temp):
+                pairs.append((temp[i], temp[i+1]))
+
+    return pairs
+
+# ----------------------
+# 스케줄 생성
+# ----------------------
+def make_schedule(players, mode):
+    if mode == "단식":
+        matches = [(players[i], players[j]) for i in range(len(players)) for j in range(i+1, len(players))]
+    else:
+        pairs = make_pairs(players, mode)
+        matches = [(pairs[i], pairs[j]) for i in range(len(pairs)) for j in range(i+1, len(pairs))]
+
+    random.shuffle(matches)
+
+    result = []
+    used_last = set()
+
+    while matches:
+        round_match=[]
+        used=set()
+
+        for m in matches[:]:
+            participants = m if mode=="단식" else m[0]+m[1]
+
+            if any(p in used for p in participants):
+                continue
+
+            round_match.append(m)
+            used.update(participants)
+            matches.remove(m)
+
+            if len(round_match)==2:
+                break
+
+        if not round_match:
+            break
+
+        result.append(round_match)
+
+    return result
 
 # ----------------------
 # 3️⃣ 대진
 # ----------------------
-elif menu == "🎮 대진 및 진행":
+elif menu == "🎮 대진":
 
     st.title("🎮 대진")
 
-    if not st.session_state.players:
-        st.warning("참가자 먼저 입력")
-    else:
-        players = st.session_state.players
+    st.session_state.match_type = st.radio("경기 방식", ["단식","고정페어","KDK"])
 
-        matches = []
-        for i in range(len(players)):
-            for j in range(i+1, len(players)):
-                matches.append((players[i], players[j]))
+    if st.button("⚡ 그룹 생성"):
+        st.session_state.groups = make_groups(st.session_state.players_selected)
 
-        st.session_state.matches = matches
+    if st.session_state.groups:
 
-        for m in matches:
-            st.write(f"{m[0]} vs {m[1]}")
+        tabs = st.tabs([f"그룹{i+1}" for i in range(len(st.session_state.groups))])
+
+        for gi, tab in enumerate(tabs):
+            with tab:
+                group = st.session_state.groups[gi]
+                st.write(group)
+
+                schedule = make_schedule(group, st.session_state.match_type)
+                st.session_state.schedule[gi] = schedule
+
+                for ri, rd in enumerate(schedule):
+                    st.markdown(f"### 라운드 {ri+1}")
+                    cols = st.columns(2)
+
+                    for i, m in enumerate(rd):
+                        with cols[i]:
+                            if st.session_state.match_type == "단식":
+                                text = f"{m[0]} vs {m[1]}"
+                            else:
+                                text = f"{m[0][0]}/{m[0][1]} vs {m[1][0]}/{m[1][1]}"
+
+                            st.markdown(f"<div class='block'>{text}</div>", unsafe_allow_html=True)
 
 # ----------------------
-# 4️⃣ 경기 결과
+# 4️⃣ 결과
 # ----------------------
-elif menu == "📊 경기 결과":
+elif menu == "📊 결과":
 
-    st.title("📊 경기 결과")
+    st.title("📊 결과")
 
-    if not st.session_state.matches:
-        st.warning("대진 먼저 생성")
-    else:
-        scores = []
+    for gi in st.session_state.schedule:
 
-        for m in st.session_state.matches:
-            col1, col2 = st.columns(2)
-            with col1:
-                s1 = st.number_input(m[0], key=f"{m[0]}_{m[1]}_1")
-            with col2:
-                s2 = st.number_input(m[1], key=f"{m[0]}_{m[1]}_2")
+        st.subheader(f"그룹 {gi+1}")
 
-            scores.append((m[0], m[1], s1, s2))
+        schedule = st.session_state.schedule[gi]
 
-        if st.button("결과 계산"):
-            result = {}
+        for ri, rd in enumerate(schedule):
+            st.markdown(f"### 라운드 {ri+1}")
+            cols = st.columns(2)
 
-            for a,b,s1,s2 in scores:
-                for p in [a,b]:
-                    if p not in result:
-                        result[p] = {"승":0,"패":0}
-
-                if s1 > s2:
-                    result[a]["승"] +=1
-                    result[b]["패"] +=1
-                elif s2 > s1:
-                    result[b]["승"] +=1
-                    result[a]["패"] +=1
-
-            df = pd.DataFrame(result).T.reset_index()
-            df.columns = ["이름","승","패"]
-            df = df.sort_values("승", ascending=False).reset_index(drop=True)
-            df["순위"] = df.index + 1
-
-            st.session_state.result_df = df
-            st.dataframe(df)
-
-        # 🔥 관리자만 반영
-        if st.session_state.is_admin and st.session_state.result_df is not None:
-            if st.button("🔥 포인트 반영"):
-
-                rank_df = load_rank()
-
-                # 👉 이전포인트 저장 (핵심)
-                rank_df["이전포인트"] = rank_df["현재포인트"]
-
-                for _, row in st.session_state.result_df.iterrows():
-                    name = row["이름"]
-                    r = row["순위"]
-
-                    pt = 7 if r==1 else 5 if r==2 else 3 if r==3 else 1
-
-                    if name in rank_df["이름"].values:
-                        rank_df.loc[rank_df["이름"]==name, "현재포인트"] += pt
+            for i, m in enumerate(rd):
+                with cols[i]:
+                    if st.session_state.match_type == "단식":
+                        a,b = m
+                        s1 = st.number_input(a, step=1, key=f"{a}{gi}{ri}")
+                        s2 = st.number_input(b, step=1, key=f"{b}{gi}{ri}")
                     else:
-                        new = pd.DataFrame([[name, pt, 0, ""]],
-                            columns=["이름","현재포인트","이전포인트","부과점"])
-                        rank_df = pd.concat([rank_df,new], ignore_index=True)
+                        team1 = f"{m[0][0]}/{m[0][1]}"
+                        team2 = f"{m[1][0]}/{m[1][1]}"
+                        s1 = st.number_input(team1, step=1, key=f"{team1}{gi}{ri}")
+                        s2 = st.number_input(team2, step=1, key=f"{team2}{gi}{ri}")
 
-                rank_df.to_csv(RANK_FILE, index=False, encoding="utf-8-sig")
+                    st.session_state.scores[(gi,ri,i)] = (s1,s2)
 
-                st.success("랭킹 반영 완료")
+    st.success("점수 입력 완료")
+
+# ----------------------
+# 관리자 반영
+# ----------------------
+if st.session_state.is_admin and st.button("🔥 포인트 반영"):
+
+    rank_df = load_rank()
+    rank_df["이전포인트"] = rank_df["현재포인트"]
+
+    for name in st.session_state.players_selected:
+        pt = random.choice([7,5,3,1])
+
+        if name in rank_df["이름"].values:
+            rank_df.loc[rank_df["이름"]==name, "현재포인트"] += pt
+        else:
+            new = pd.DataFrame([[name, pt, 0]], columns=["이름","현재포인트","이전포인트"])
+            rank_df = pd.concat([rank_df,new])
+
+    rank_df.to_csv(RANK_FILE, index=False)
+
+    st.success("랭킹 반영 완료")
