@@ -18,9 +18,11 @@ defaults = {
     "group_types": {},
     "schedule": {},
     "pairs": {},
+    "scores": {},
     "current_round": {},
     "group_count": 2,
-    "is_admin": False
+    "is_admin": False,
+    "user_name": ""
 }
 for k,v in defaults.items():
     if k not in st.session_state:
@@ -40,21 +42,18 @@ h1,h2,h3 {text-align:center;}
     text-align:center;
     font-weight:600;
 }
-.pair {background:#d1ecf1;}
 .now {background:#ffe066;}
 </style>
 """, unsafe_allow_html=True)
 
 # ----------------------
-# 랭킹 로드 (🔥 핵심 수정)
+# 랭킹
 # ----------------------
 def load_rank():
     if os.path.exists(RANK_FILE):
         df = pd.read_csv(RANK_FILE)
-
         df["현재포인트"] = pd.to_numeric(df["현재포인트"], errors="coerce").fillna(0)
         df["이전포인트"] = pd.to_numeric(df["이전포인트"], errors="coerce").fillna(0)
-
         return df
     return pd.DataFrame(columns=["이름","현재포인트","이전포인트"])
 
@@ -94,18 +93,16 @@ def make_groups(players, group_count):
     return groups
 
 # ----------------------
-# 페어 생성 (🔥 추가)
+# 페어
 # ----------------------
 def make_pairs(players, mode):
     if mode == "고정페어":
         n = len(players)
         return [(players[i], players[n-1-i]) for i in range(n//2)]
-
     elif mode == "KDK":
         temp = players.copy()
         random.shuffle(temp)
         return [(temp[i], temp[i+1]) for i in range(0,len(temp),2)]
-
     return []
 
 # ----------------------
@@ -160,60 +157,14 @@ if menu == "두류랭킹":
         st.dataframe(df, use_container_width=True)
 
 # ----------------------
-# 2. 대진
+# 2. 대진 (보기 전용)
 # ----------------------
 elif menu == "대진 및 경기 현황":
-    st.title("🎮 대진 및 진행")
+    st.title("🎮 경기 현황")
 
-    st.session_state.group_count = st.number_input("그룹 수",2,6,2)
-
-    if st.button("그룹 생성"):
-        st.session_state.groups = make_groups(st.session_state.players_selected, st.session_state.group_count)
-
-    if st.session_state.groups:
-
-        tabs = st.tabs(list(st.session_state.groups.keys()))
-
-        for i,g in enumerate(st.session_state.groups.keys()):
-            with tabs[i]:
-                players = st.session_state.groups[g]
-
-                st.subheader(f"{g} 그룹")
-
-                # 참가자 표시
-                for p in players:
-                    st.markdown(f"<div class='card'>{p}</div>", unsafe_allow_html=True)
-
-                # 경기 방식
-                mode = st.selectbox("경기 방식",["단식","고정페어","KDK"], key=g)
-                st.session_state.group_types[g] = mode
-
-                # 🔥 페어 UI
-                if mode != "단식":
-                    pairs = make_pairs(players, mode)
-                    st.session_state.pairs[g] = pairs
-
-                    st.markdown("### 🎾 페어 구성")
-                    for p in pairs:
-                        st.markdown(f"<div class='card pair'>{p[0]} / {p[1]}</div>", unsafe_allow_html=True)
-
-        # 대진 생성
-        if st.button("대진 생성"):
-            for g, players in st.session_state.groups.items():
-                mode = st.session_state.group_types[g]
-
-                if mode == "단식":
-                    base = players
-                else:
-                    pairs = st.session_state.pairs.get(g, [])
-                    base = [p for pair in pairs for p in pair]
-
-                st.session_state.schedule[g] = make_schedule(base)
-                st.session_state.current_round[g] = 0
-
-    # 경기 진행 UI
-    if st.session_state.schedule:
-
+    if not st.session_state.schedule:
+        st.warning("관리자가 대진 생성 필요")
+    else:
         tabs = st.tabs(list(st.session_state.schedule.keys()))
 
         for i,g in enumerate(st.session_state.schedule.keys()):
@@ -228,19 +179,36 @@ elif menu == "대진 및 경기 현황":
                             cls = "card now" if ri == st.session_state.current_round[g] else "card"
                             st.markdown(f"<div class='{cls}'>{m[0]} vs {m[1]}</div>", unsafe_allow_html=True)
 
-                if st.button(f"{g} 다음 경기"):
-                    st.session_state.current_round[g] += 1
-
 # ----------------------
-# 3. 결과
+# 3. 경기 결과 (본인만 입력)
 # ----------------------
 elif menu == "경기 결과":
-    st.title("📊 경기 결과")
+    st.title("📊 경기 결과 입력")
 
     if not st.session_state.schedule:
-        st.warning("대진 먼저 생성")
+        st.warning("대진 없음")
     else:
-        st.write("점수 입력 기능 유지됨 (생략 가능)")
+        name = st.selectbox("본인 선택", st.session_state.players_selected)
+        st.session_state.user_name = name
+
+        for g, rounds in st.session_state.schedule.items():
+
+            st.subheader(f"{g} 그룹")
+
+            for ri, rd in enumerate(rounds):
+                for m in rd:
+                    a,b = m
+
+                    if name in m:
+                        st.markdown(f"### {a} vs {b}")
+
+                        key1 = f"{a}_{b}_{g}_{ri}_1"
+                        key2 = f"{a}_{b}_{g}_{ri}_2"
+
+                        s1 = st.number_input(a,0,50,0,key=key1)
+                        s2 = st.number_input(b,0,50,0,key=key2)
+
+                        st.session_state.scores[(a,b)] = (s1,s2)
 
 # ----------------------
 # 4. 관리자
@@ -257,6 +225,7 @@ elif menu == "관리자 설정":
 
     if st.session_state.is_admin:
 
+        # 참가자 입력
         raw = st.text_area("참가자 입력")
 
         if st.button("등록"):
@@ -271,4 +240,32 @@ elif menu == "관리자 설정":
             selected = st.session_state.players_all.copy()
 
         st.session_state.players_selected = selected
-        st.write("선택 인원:", len(selected))
+
+        # 그룹 설정
+        st.session_state.group_count = st.number_input("그룹 수",2,6,2)
+
+        if st.button("그룹 생성"):
+            st.session_state.groups = make_groups(selected, st.session_state.group_count)
+
+        # 경기 방식 + 페어
+        for g, players in st.session_state.groups.items():
+            st.subheader(f"{g} 그룹")
+
+            mode = st.selectbox("경기 방식",["단식","고정페어","KDK"], key=f"type_{g}")
+            st.session_state.group_types[g] = mode
+
+            if mode != "단식":
+                pairs = make_pairs(players, mode)
+                st.session_state.pairs[g] = pairs
+
+                for p in pairs:
+                    st.markdown(f"<div class='card'>{p[0]} / {p[1]}</div>", unsafe_allow_html=True)
+
+        # 대진 생성
+        if st.button("대진 생성"):
+            for g, players in st.session_state.groups.items():
+                base = players
+                st.session_state.schedule[g] = make_schedule(base)
+                st.session_state.current_round[g] = 0
+
+        st.success("설정 완료")
