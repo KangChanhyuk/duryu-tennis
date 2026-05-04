@@ -6,8 +6,6 @@ import string
 
 st.set_page_config(layout="wide")
 
-RANK_FILE = "ranking_master.csv"
-
 # ----------------------
 # 상태 초기화
 # ----------------------
@@ -17,10 +15,10 @@ defaults = {
     "groups": {},
     "group_sizes": {},
     "group_types": {},
+    "pairs": {},
     "schedule": {},
     "scores": {},
     "current_round": {},
-    "group_count": 2,
     "is_admin": False
 }
 for k,v in defaults.items():
@@ -50,42 +48,42 @@ h1,h2,h3 {text-align:center;}
 """, unsafe_allow_html=True)
 
 # ----------------------
-# 랭킹
+# 페어 생성
 # ----------------------
-def load_rank():
-    if os.path.exists(RANK_FILE):
-        df = pd.read_csv(RANK_FILE)
-        df["현재포인트"] = pd.to_numeric(df["현재포인트"], errors="coerce").fillna(0)
-        df["이전포인트"] = pd.to_numeric(df["이전포인트"], errors="coerce").fillna(0)
-        return df
-    return pd.DataFrame(columns=["이름","현재포인트","이전포인트"])
+def make_pairs(players, mode):
+    if mode == "고정페어":
+        n = len(players)
+        return [(players[i], players[n-1-i]) for i in range(n//2)]
+    elif mode == "KDK":
+        temp = players.copy()
+        random.shuffle(temp)
+        return [(temp[i], temp[i+1]) for i in range(0,len(temp),2)]
+    return [(p,) for p in players]  # 단식
 
 # ----------------------
-# 그룹 생성 (정원 기반)
+# 그룹 생성 (빠짐 방지)
 # ----------------------
 def make_groups(players, group_sizes):
-    rank_df = load_rank()
-    rank_map = {r["이름"]:r["현재포인트"] for _,r in rank_df.iterrows()}
-
-    players_sorted = sorted(players, key=lambda x: rank_map.get(x,0), reverse=True)
-
     groups = {g:[] for g in group_sizes.keys()}
 
     idx_list = []
     for g, size in group_sizes.items():
         idx_list += [g]*size
 
-    for i, p in enumerate(players_sorted):
-        if i < len(idx_list):
-            groups[idx_list[i]].append(p)
+    # 부족한 경우 자동 채움
+    while len(idx_list) < len(players):
+        idx_list.append(list(group_sizes.keys())[0])
+
+    for i, p in enumerate(players):
+        groups[idx_list[i]].append(p)
 
     return groups
 
 # ----------------------
-# 대진 생성
+# 대진 생성 (페어 기준)
 # ----------------------
-def make_schedule(players):
-    matches = [(players[i], players[j]) for i in range(len(players)) for j in range(i+1,len(players))]
+def make_schedule(teams):
+    matches = [(teams[i], teams[j]) for i in range(len(teams)) for j in range(i+1,len(teams))]
     random.shuffle(matches)
 
     rounds=[]
@@ -94,12 +92,14 @@ def make_schedule(players):
         r=[]
 
         for m in matches[:]:
-            a,b=m
-            if a in used or b in used:
+            t1, t2 = m
+
+            if t1 in used or t2 in used:
                 continue
 
             r.append(m)
-            used.update([a,b])
+            used.add(t1)
+            used.add(t2)
             matches.remove(m)
 
             if len(r)==2:
@@ -113,22 +113,27 @@ def make_schedule(players):
     return rounds
 
 # ----------------------
-# 매트릭스
+# 매트릭스 (페어)
 # ----------------------
-def draw_matrix(players, scores):
-    table = "<table class='matrix'>"
-    table += "<tr><td></td>" + "".join([f"<td>{p}</td>" for p in players]) + "</tr>"
+def draw_matrix(teams, scores):
+    names = [" / ".join(t) for t in teams]
 
-    for p1 in players:
-        table += f"<tr><td>{p1}</td>"
-        for p2 in players:
-            if p1 == p2:
+    table = "<table class='matrix'>"
+    table += "<tr><td></td>" + "".join([f"<td>{n}</td>" for n in names]) + "</tr>"
+
+    for i, t1 in enumerate(teams):
+        table += f"<tr><td>{names[i]}</td>"
+
+        for j, t2 in enumerate(teams):
+            if i == j:
                 table += "<td>❌</td>"
-            elif (p1,p2) in scores:
-                s1,s2 = scores[(p1,p2)]
-                table += f"<td>{s1}:{s2}</td>"
             else:
-                table += "<td></td>"
+                key = (tuple(t1), tuple(t2))
+                if key in scores:
+                    s1,s2 = scores[key]
+                    table += f"<td>{s1}:{s2}</td>"
+                else:
+                    table += "<td></td>"
         table += "</tr>"
 
     table += "</table>"
@@ -137,104 +142,16 @@ def draw_matrix(players, scores):
 # ----------------------
 # 메뉴
 # ----------------------
-menu = st.sidebar.radio("메뉴", ["두류랭킹","대진 및 경기 현황","경기 결과","관리자 설정"])
-
-# ----------------------
-# 대진 및 경기 현황
-# ----------------------
-if menu == "대진 및 경기 현황":
-
-    st.title("🎮 대진 및 경기")
-
-    if not st.session_state.schedule:
-        st.warning("관리자 설정 필요")
-    else:
-        tabs = st.tabs(list(st.session_state.schedule.keys()))
-
-        for i,g in enumerate(st.session_state.schedule.keys()):
-            with tabs[i]:
-
-                players = st.session_state.groups[g]
-                rounds = st.session_state.schedule[g]
-
-                st.subheader(f"{g} 그룹")
-
-                # 매트릭스
-                draw_matrix(players, st.session_state.scores)
-
-                # 경기 순서
-                st.markdown("### 경기 순서")
-
-                for ri, rd in enumerate(rounds):
-                    cols = st.columns(2)
-
-                    for j,m in enumerate(rd):
-                        a,b = m
-
-                        with cols[j]:
-                            key = (a,b)
-
-                            cls = "card now" if ri == st.session_state.current_round[g] else "card"
-
-                            st.markdown(f"<div class='{cls}'>{a} vs {b}</div>", unsafe_allow_html=True)
-
-                            s1 = st.number_input(a,0,50,0,key=f"{a}{b}{ri}")
-                            s2 = st.number_input(b,0,50,0,key=f"{b}{a}{ri}")
-
-                            if s1 or s2:
-                                st.session_state.scores[(a,b)] = (s1,s2)
-                                st.session_state.scores[(b,a)] = (s2,s1)
-
-                if st.button(f"{g} 다음 경기"):
-                    st.session_state.current_round[g] += 1
-
-# ----------------------
-# 경기 결과
-# ----------------------
-elif menu == "경기 결과":
-
-    st.title("📊 경기 결과")
-
-    for g, players in st.session_state.groups.items():
-
-        st.subheader(f"{g} 그룹")
-
-        draw_matrix(players, st.session_state.scores)
-
-        result = {}
-
-        for (a,b), (s1,s2) in st.session_state.scores.items():
-
-            for p in [a,b]:
-                if p not in result:
-                    result[p] = {"승":0,"패":0,"득실":0}
-
-            if s1 > s2:
-                result[a]["승"] +=1
-                result[b]["패"] +=1
-            elif s2 > s1:
-                result[b]["승"] +=1
-                result[a]["패"] +=1
-
-            result[a]["득실"] += s1-s2
-            result[b]["득실"] += s2-s1
-
-        df = pd.DataFrame(result).T.reset_index()
-        df.columns = ["이름","승","패","득실"]
-        df = df.sort_values(["승","득실"], ascending=False).reset_index(drop=True)
-        df["순위"] = df.index+1
-
-        st.dataframe(df)
+menu = st.sidebar.radio("메뉴", ["대진 및 경기 현황","경기 결과","관리자 설정"])
 
 # ----------------------
 # 관리자
 # ----------------------
-elif menu == "관리자 설정":
+if menu == "관리자 설정":
 
     st.title("⚙ 관리자")
 
     pw = st.text_input("비밀번호", type="password")
-
     if st.button("로그인"):
         if pw == "0502":
             st.session_state.is_admin = True
@@ -242,32 +159,122 @@ elif menu == "관리자 설정":
     if st.session_state.is_admin:
 
         raw = st.text_area("참가자 입력")
-
         if st.button("등록"):
-            st.session_state.players_all = [p.strip() for p in raw.split(",") if p.strip()]
+            st.session_state.players_selected = [p.strip() for p in raw.split(",") if p.strip()]
 
-        selected = []
-        for p in st.session_state.players_all:
-            if st.checkbox(p, value=True):
-                selected.append(p)
+        total = len(st.session_state.players_selected)
+        st.info(f"총 참가자: {total}")
 
-        st.session_state.players_selected = selected
-
-        # 그룹 수
+        # 그룹 설정
         count = st.number_input("그룹 수",2,6,2)
-
-        group_sizes = {}
         names = list(string.ascii_uppercase[:count])
 
+        group_sizes = {}
+        total_set = 0
+
         for g in names:
-            group_sizes[g] = st.number_input(f"{g} 인원",1,20,4)
+            size = st.number_input(f"{g} 그룹 인원",1,20,4)
+            group_sizes[g] = size
+            total_set += size
+
+        st.write(f"설정 인원 합: {total_set}")
+
+        if total_set != total:
+            st.warning("⚠ 인원 불일치 (자동 보정됨)")
 
         st.session_state.group_sizes = group_sizes
 
+        # 그룹 생성
         if st.button("그룹 생성"):
-            st.session_state.groups = make_groups(selected, group_sizes)
+            st.session_state.groups = make_groups(st.session_state.players_selected, group_sizes)
 
+        # 경기 방식 + 페어
+        for g, players in st.session_state.groups.items():
+            st.subheader(f"{g} 그룹")
+
+            mode = st.selectbox("경기 방식",["단식","고정페어","KDK"], key=g)
+            pairs = make_pairs(players, mode)
+            st.session_state.pairs[g] = pairs
+
+            for p in pairs:
+                st.markdown(f"<div class='card'>{' / '.join(p)}</div>", unsafe_allow_html=True)
+
+        # 대진 생성
         if st.button("대진 생성"):
-            for g, players in st.session_state.groups.items():
-                st.session_state.schedule[g] = make_schedule(players)
+            for g, teams in st.session_state.pairs.items():
+                st.session_state.schedule[g] = make_schedule(teams)
                 st.session_state.current_round[g] = 0
+
+# ----------------------
+# 대진
+# ----------------------
+elif menu == "대진 및 경기 현황":
+
+    st.title("🎮 대진 및 경기")
+
+    for g, rounds in st.session_state.schedule.items():
+
+        st.subheader(f"{g} 그룹")
+
+        teams = st.session_state.pairs[g]
+
+        draw_matrix(teams, st.session_state.scores)
+
+        for ri, rd in enumerate(rounds):
+            cols = st.columns(2)
+
+            for i,m in enumerate(rd):
+                t1,t2 = m
+                with cols[i]:
+                    name1 = " / ".join(t1)
+                    name2 = " / ".join(t2)
+
+                    st.markdown(f"<div class='card'>{name1} vs {name2}</div>", unsafe_allow_html=True)
+
+                    s1 = st.number_input(name1,0,50,0,key=f"{name1}{ri}")
+                    s2 = st.number_input(name2,0,50,0,key=f"{name2}{ri}")
+
+                    if s1 or s2:
+                        st.session_state.scores[(tuple(t1),tuple(t2))] = (s1,s2)
+                        st.session_state.scores[(tuple(t2),tuple(t1))] = (s2,s1)
+
+# ----------------------
+# 결과
+# ----------------------
+elif menu == "경기 결과":
+
+    st.title("📊 경기 결과")
+
+    for g, teams in st.session_state.pairs.items():
+
+        st.subheader(f"{g} 그룹")
+
+        draw_matrix(teams, st.session_state.scores)
+
+        result = {}
+
+        for (t1,t2), (s1,s2) in st.session_state.scores.items():
+
+            n1 = " / ".join(t1)
+            n2 = " / ".join(t2)
+
+            for t in [n1,n2]:
+                if t not in result:
+                    result[t] = {"승":0,"패":0,"득실":0}
+
+            if s1 > s2:
+                result[n1]["승"]+=1
+                result[n2]["패"]+=1
+            elif s2 > s1:
+                result[n2]["승"]+=1
+                result[n1]["패"]+=1
+
+            result[n1]["득실"] += s1-s2
+            result[n2]["득실"] += s2-s1
+
+        df = pd.DataFrame(result).T.reset_index()
+        df.columns = ["팀","승","패","득실"]
+        df = df.sort_values(["승","득실"], ascending=False)
+        df["순위"] = range(1,len(df)+1)
+
+        st.dataframe(df)
