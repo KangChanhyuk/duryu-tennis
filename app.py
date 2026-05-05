@@ -135,6 +135,10 @@ elif menu == "📅 대진표/입력":
         st.warning("대진이 없습니다. 관리자 페이지에서 대회를 생성하세요.")
     else:
         st.info(f"🏟 대회명: {st.session_state.tournament_name}")
+        # 전체 랭킹 명단 가져오기
+        all_rank_players = load_rank()['이름'].tolist() if not load_rank().empty else []
+        full_selection_list = sorted(list(set(st.session_state.players + all_rank_players)))
+        
         tabs = st.tabs([f"Group {g}" for g in st.session_state.schedule.keys()])
         for idx, g in enumerate(st.session_state.schedule.keys()):
             with tabs[idx]:
@@ -146,12 +150,18 @@ elif menu == "📅 대진표/입력":
                             c1, c_vs, c2 = st.columns([4, 1, 4])
                             with c1:
                                 st.markdown(f"<div class='team-card {bg_class}'><div class='team-name'>{team_name(t1)}</div></div>", unsafe_allow_html=True)
-                                # 선수 교체 기능
                                 with st.expander("선수 교체"):
                                     for pi, p_name in enumerate(t1):
-                                        new_p = st.selectbox(f"교체 ({p_name})", st.session_state.players, index=st.session_state.players.index(p_name) if p_name in st.session_state.players else 0, key=f"chg_{g}_{ri}_{mi}_t1_{pi}")
-                                        if new_p != p_name: 
-                                            st.session_state.schedule[g][ri][mi][0][pi] = new_p
+                                        # 교체 옵션: 전체 명단 + 직접 입력
+                                        options = ["선택안함"] + full_selection_list + ["🆕 직접 입력"]
+                                        sel = st.selectbox(f"교체 ({p_name})", options, key=f"sel_{g}_{ri}_{mi}_t1_{pi}")
+                                        if sel == "🆕 직접 입력":
+                                            new_name = st.text_input("이름 입력", key=f"txt_{g}_{ri}_{mi}_t1_{pi}")
+                                            if st.button("확인", key=f"btn_ok_{g}_{ri}_{mi}_t1_{pi}") and new_name:
+                                                st.session_state.schedule[g][ri][mi][0][pi] = new_name.strip()
+                                                st.rerun()
+                                        elif sel != "선택안함":
+                                            st.session_state.schedule[g][ri][mi][0][pi] = sel
                                             st.rerun()
                                 s1 = st.number_input("Score", 0, 10, key=f"s1_{g}_{ri}_{mi}", label_visibility="collapsed")
                             with c_vs: st.markdown("<div class='vs-text'>VS</div>", unsafe_allow_html=True)
@@ -159,9 +169,15 @@ elif menu == "📅 대진표/입력":
                                 st.markdown(f"<div class='team-card {bg_class}'><div class='team-name'>{team_name(t2)}</div></div>", unsafe_allow_html=True)
                                 with st.expander("선수 교체"):
                                     for pi, p_name in enumerate(t2):
-                                        new_p = st.selectbox(f"교체 ({p_name})", st.session_state.players, index=st.session_state.players.index(p_name) if p_name in st.session_state.players else 0, key=f"chg_{g}_{ri}_{mi}_t2_{pi}")
-                                        if new_p != p_name: 
-                                            st.session_state.schedule[g][ri][mi][1][pi] = new_p
+                                        options = ["선택안함"] + full_selection_list + ["🆕 직접 입력"]
+                                        sel = st.selectbox(f"교체 ({p_name})", options, key=f"sel_{g}_{ri}_{mi}_t2_{pi}")
+                                        if sel == "🆕 직접 입력":
+                                            new_name = st.text_input("이름 입력", key=f"txt_{g}_{ri}_{mi}_t2_{pi}")
+                                            if st.button("확인", key=f"btn_ok_{g}_{ri}_{mi}_t2_{pi}") and new_name:
+                                                st.session_state.schedule[g][ri][mi][1][pi] = new_name.strip()
+                                                st.rerun()
+                                        elif sel != "선택안함":
+                                            st.session_state.schedule[g][ri][mi][1][pi] = sel
                                             st.rerun()
                                 s2 = st.number_input("Score", 0, 10, key=f"s2_{g}_{ri}_{mi}", label_visibility="collapsed")
                             if st.button(f"결과 저장: {mi+1}번 경기", key=f"btn_{g}_{ri}_{mi}"):
@@ -202,7 +218,7 @@ elif menu == "📜 지난 대회 기록":
 elif menu == "⚙ 관리자 센터":
     st.markdown("<div class='main-title'>ADMIN PANEL</div>", unsafe_allow_html=True)
     if st.text_input("비밀번호", type="password") == "0502":
-        tab1, tab2, tab3 = st.tabs(["대회 생성", "랭킹/결과/부가점", "시스템 초기화"])
+        tab1, tab2, tab3 = st.tabs(["대회 생성", "랭킹/결과/부과점", "시스템 초기화"])
         
         with tab1:
             st.session_state.tournament_name = st.text_input("대회 이름 입력", st.session_state.tournament_name)
@@ -226,7 +242,7 @@ elif menu == "⚙ 관리자 센터":
                 st.success(f"'{st.session_state.tournament_name}' 대진표 생성 완료!")
 
         with tab2:
-            st.subheader("📁 엑셀 및 부가 포인트")
+            st.subheader("📁 엑셀 및 부과 포인트")
             up_file = st.file_uploader("랭킹 엑셀 업로드", type=["csv", "xlsx"])
             if up_file:
                 df_raw = pd.read_excel(up_file) if up_file.name.endswith('xlsx') else pd.read_csv(up_file)
@@ -236,14 +252,15 @@ elif menu == "⚙ 관리자 센터":
                     if st.button("랭킹 저장"): save_rank(df_p); st.success("저장완료")
 
             st.divider()
+            st.subheader("⚖️ 부과점 관리")
             c_p1, c_p2 = st.columns(2)
             with c_p1:
-                target_p = st.selectbox("포인트 부여 선수", load_rank()['이름'].tolist() if not load_rank().empty else [])
-                extra_pt = st.number_input("부가 포인트(보너스)", -100, 100, 0)
-                if st.button("부가점 반영"):
+                target_p = st.selectbox("부과점 부여 선수", load_rank()['이름'].tolist() if not load_rank().empty else [])
+                extra_pt = st.number_input("부과 점수(보너스/벌점)", -100, 100, 0)
+                if st.button("부과점 반영"):
                     r_df = load_rank()
                     r_df.loc[r_df['이름'] == target_p, '현재포인트'] += extra_pt
-                    save_rank(r_df); st.success(f"{target_p}님에게 {extra_pt}점 반영됨")
+                    save_rank(r_df); st.success(f"{target_p}님에게 {extra_pt}점 부과 완료")
 
             st.divider()
             if st.button("현재 대회 결과 확정 (랭킹 반영)"):
@@ -251,7 +268,7 @@ elif menu == "⚙ 관리자 센터":
                 for g, g_players in st.session_state.groups.items():
                     stats = {}
                     for (t1, t2), (s1, s2) in st.session_state.scores.items():
-                        if t1[0] not in g_players: continue
+                        # 현재 대진표에 표시된 실시간 이름 기준 반영
                         for team, my_s, op_s in [(t1, s1, s2), (t2, s2, s1)]:
                             for n in team:
                                 if n not in stats: stats[n] = {"승":0, "득실":0}
@@ -263,6 +280,10 @@ elif menu == "⚙ 관리자 센터":
                         rank_pos = idx + 1
                         pts = 7 if rank_pos <= 2 else (5 if rank_pos <= 4 else 3)
                         if p_name in rank["이름"].values: rank.loc[rank["이름"] == p_name, "현재포인트"] += pts
+                        else: # 새로운 선수인 경우 랭킹에 추가
+                             new_row = pd.DataFrame({"이름": [p_name], "현재포인트": [pts]})
+                             rank = pd.concat([rank, new_row], ignore_index=True)
+                             
                         history_data.append({
                             "날짜": st.session_state.current_date, "대회명": st.session_state.tournament_name,
                             "그룹": g, "방식": st.session_state.modes[g], "이름": p_name, 
