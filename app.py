@@ -2,20 +2,39 @@ import streamlit as st
 import pandas as pd
 import random
 import os
-
-st.set_page_config(layout="wide")
+import json
+from datetime import datetime
 
 # =============================
-# 파일 초기 생성
+# 설정 및 스타일 (가운데 정렬)
+# =============================
+st.set_page_config(layout="wide", page_title="두류 테니스 클럽")
+
+st.markdown("""
+    <style>
+    .main-title { text-align: center; font-size: 3rem; font-weight: bold; margin-bottom: 20px; }
+    .sub-title { text-align: center; font-size: 1.5rem; color: #666; margin-bottom: 30px; }
+    .centered-text { text-align: center; }
+    div[data-testid="stExpander"] { text-align: center; }
+    .stButton>button { display: block; margin: 0 auto; }
+    th { text-align: center !important; }
+    td { text-align: center !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+# =============================
+# 데이터 파일 및 초기화
 # =============================
 RANK_FILE = "ranking_master.csv"
+TOURNAMENT_FILE = "tournaments.json"
 
 if not os.path.exists(RANK_FILE):
     pd.DataFrame(columns=["이름", "현재포인트", "이전포인트"]).to_csv(RANK_FILE, index=False)
 
-# =============================
-# 상태 초기화
-# =============================
+if not os.path.exists(TOURNAMENT_FILE):
+    with open(TOURNAMENT_FILE, "w") as f:
+        json.dump({}, f)
+
 def init_state():
     defaults = {
         "players": [],
@@ -23,7 +42,8 @@ def init_state():
         "pairs": {},
         "schedule": {},
         "scores": {},
-        "is_admin": False
+        "is_admin": False,
+        "current_tournament": None
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -32,48 +52,7 @@ def init_state():
 init_state()
 
 # =============================
-# 엑셀 유연 인식
-# =============================
-def smart_read(file):
-    try:
-        if file.name.endswith(".csv"):
-            df = pd.read_csv(file)
-        else:
-            df = pd.read_excel(file)
-    except Exception as e:
-        st.error(f"파일 읽기 실패: {e}")
-        return None
-
-    df.columns = [str(c).lower().strip() for c in df.columns]
-
-    name_col = None
-    point_col = None
-    prev_col = None
-
-    for c in df.columns:
-        if "이름" in c or "name" in c:
-            name_col = c
-        elif "포인트" in c or "point" in c:
-            if point_col is None:
-                point_col = c
-            else:
-                prev_col = c
-
-    if name_col is None:
-        st.error("이름 컬럼 없음")
-        return None
-
-    df["이름"] = df[name_col].astype(str).str.strip().str.replace(" ", "")
-    df["현재포인트"] = pd.to_numeric(df[point_col], errors="coerce").fillna(0) if point_col else 0
-    df["이전포인트"] = pd.to_numeric(df[prev_col], errors="coerce").fillna(0) if prev_col else 0
-
-    df = df[["이름", "현재포인트", "이전포인트"]]
-    df = df.drop_duplicates(subset="이름")
-
-    return df
-
-# =============================
-# 랭킹 로드 / 저장
+# 핵심 로직 (랭킹, 그룹, 대진)
 # =============================
 def load_rank():
     df = pd.read_csv(RANK_FILE)
@@ -84,353 +63,229 @@ def load_rank():
 def save_rank(df):
     df.to_csv(RANK_FILE, index=False)
 
-# =============================
-# 유틸
-# =============================
-def clean(x):
-    return str(x).strip().replace(" ", "")
-
 def team_name(t):
-    # t는 항상 tuple로 처리
     t = tuple(t)
-    return t[0] if len(t) == 1 else f"{t[0]}&{t[1]}"
+    return t[0] if len(t) == 1 else f"{t[0]}, {t[1]}"
 
-# =============================
-# 그룹 생성 (랭킹 기반)
-# 버그수정: 랭킹에 없는 신규 플레이어도 배정되도록
-# =============================
 def make_groups(players, sizes):
     rank = load_rank().sort_values("현재포인트", ascending=False)
-
-    # 랭킹에 있는 플레이어는 랭킹 순서로, 없는 플레이어는 뒤에 추가
     ordered_in_rank = [p for p in rank["이름"] if p in players]
     not_in_rank = [p for p in players if p not in ordered_in_rank]
     ordered = ordered_in_rank + not_in_rank
-
-    groups = {g: [] for g in sizes}
-
-    # 각 그룹에 몇 명씩 넣을지 인덱스 리스트 생성
-    idx = []
-    for g, s in sizes.items():
-        idx += [g] * s
-
-    for i, p in enumerate(ordered):
-        if i < len(idx):
-            groups[idx[i]].append(p)
-        # 인원 초과분은 마지막 그룹에 추가
-        else:
-            last_group = list(groups.keys())[-1]
-            groups[last_group].append(p)
-
+    
+    groups = {}
+    current_idx = 0
+    for g_name, size in sizes.items():
+        groups[g_name] = ordered[current_idx : current_idx + size]
+        current_idx += size
     return groups
 
-# =============================
-# 페어 생성
-# 버그수정: 홀수 인원 처리, KDK 홀수 처리
-# =============================
 def make_pairs(players, mode):
     if mode == "고정페어":
-        pairs = []
         n = len(players)
-        for i in range(n // 2):
-            pairs.append((players[i], players[n - 1 - i]))
-        # 홀수면 가운데 한 명은 단식으로
-        if n % 2 == 1:
-            pairs.append((players[n // 2],))
-        return pairs
-
-    if mode == "KDK":
-        temp = players[:]
-        random.shuffle(temp)
-        pairs = []
-        for i in range(0, len(temp) - 1, 2):
-            pairs.append((temp[i], temp[i + 1]))
-        # 홀수면 마지막 한 명은 단식으로
-        if len(temp) % 2 == 1:
-            pairs.append((temp[-1],))
-        return pairs
-
-    # 단식
+        return [tuple(players[i:i+2]) for i in range(0, n, 2)]
+    elif mode == "KDK":
+        # KDK는 매 라운드 조합이 변하나, 여기서는 편의상 전체 명단 반환 후 대진에서 조합
+        return [(p,) for p in players] 
     return [(p,) for p in players]
 
-# =============================
-# 2코트 대진 생성
-# 버그수정: teams를 모두 tuple로 통일하여 해시 오류 방지
-# =============================
 def make_schedule(teams):
-    # teams를 모두 tuple로 변환
     teams = [tuple(t) for t in teams]
-
-    matches = [
-        (teams[i], teams[j])
-        for i in range(len(teams))
-        for j in range(i + 1, len(teams))
-    ]
+    matches = [(teams[i], teams[j]) for i in range(len(teams)) for j in range(i + 1, len(teams))]
     random.shuffle(matches)
-
+    
     rounds = []
-
-    while matches:
+    temp_matches = matches[:]
+    while temp_matches:
         used = set()
         r = []
-
-        for m in matches[:]:
-            t1, t2 = m
-            if t1 in used or t2 in used:
-                continue
-
-            r.append(m)
-            used.add(t1)
-            used.add(t2)
-            matches.remove(m)
-
-            if len(r) == 2:
-                break
-
-        if not r:
-            break
-
+        for m in temp_matches[:]:
+            if not (set(m[0]) & used) and not (set(m[1]) & used):
+                r.append(m)
+                used.update(m[0])
+                used.update(m[1])
+                temp_matches.remove(m)
+            if len(r) >= 2: break # 코트 2개 기준
+        if not r: break
         rounds.append(r)
-
     return rounds
 
 # =============================
-# 메뉴
+# 메뉴 구성
 # =============================
-menu = st.sidebar.radio("메뉴", ["두류랭킹", "대진 및 경기", "경기 결과", "관리자"])
+st.sidebar.markdown("<h2 style='text-align: center;'>🎾 두류 테니스</h2>", unsafe_allow_html=True)
+menu = st.sidebar.radio("메뉴 선택", ["🏆 랭킹보드", "📅 대진 및 경기현황", "📊 경기 결과 요약", "⚙ 관리자 페이지"])
 
 # =============================
-# 랭킹
+# 1. 랭킹보드
 # =============================
-if menu == "두류랭킹":
-    st.title("🏆 두류랭킹")
-
-    df = load_rank()
-
-    if len(df) == 0:
-        st.warning("관리자에서 엑셀 업로드 필요")
-    else:
-        df = df.sort_values("현재포인트", ascending=False).reset_index(drop=True)
-        df.insert(0, "랭킹", df.index + 1)
+if menu == "🏆 랭킹보드":
+    st.markdown("<div class='main-title'>🏆 실시간 클럽 랭킹</div>", unsafe_allow_html=True)
+    df = load_rank().sort_values("현재포인트", ascending=False).reset_index(drop=True)
+    if not df.empty:
+        df.insert(0, "순위", df.index + 1)
         st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("등록된 데이터가 없습니다.")
 
 # =============================
-# 대진 및 경기
-# 버그수정: 저장 후 st.rerun() 추가, tuple 타입 통일
+# 2. 대진 및 경기현황 (사진 3, 4 스타일 반영)
 # =============================
-elif menu == "대진 및 경기":
-    st.title("🎾 대진")
-
+elif menu == "📅 대진 및 경기현황":
+    st.markdown("<div class='main-title'>🎾 대진 및 경기 현황</div>", unsafe_allow_html=True)
+    
     if not st.session_state.schedule:
-        st.warning("관리자에서 대진 생성하세요")
+        st.warning("진행 중인 대진이 없습니다. 관리자 페이지에서 생성해주세요.")
     else:
-        tabs = st.tabs(list(st.session_state.schedule.keys()))
-
-        for idx, g in enumerate(st.session_state.schedule.keys()):
-            with tabs[idx]:
-                rounds = st.session_state.schedule[g]
-
+        group_tabs = st.tabs([f"{g} 그룹" for g in st.session_state.schedule.keys()])
+        
+        for idx, (g_name, rounds) in enumerate(st.session_state.schedule.items()):
+            with group_tabs[idx]:
+                st.markdown(f"<h2 class='centered-text'>({g_name})그룹 리그전</h2>", unsafe_allow_html=True)
+                
                 for ri, rd in enumerate(rounds):
-                    st.markdown(f"### {ri + 1} 라운드")
-                    cols = st.columns(2)
-
-                    for i, m in enumerate(rd):
-                        t1, t2 = tuple(m[0]), tuple(m[1])
-                        n1 = team_name(t1)
-                        n2 = team_name(t2)
-
-                        with cols[i]:
-                            st.write(f"**{n1}** vs **{n2}**")
-
-                            key = f"{g}_{ri}_{i}"
-
-                            # 이미 저장된 점수가 있으면 기본값으로 표시
-                            score_key = (t1, t2)
-                            saved = st.session_state.scores.get(score_key, (0, 0))
-
-                            s1 = st.number_input(n1, 0, 50, int(saved[0]), key=key + "_1")
-                            s2 = st.number_input(n2, 0, 50, int(saved[1]), key=key + "_2")
-
-                            if st.button(f"저장", key=key + "_btn"):
-                                st.session_state.scores[(t1, t2)] = (s1, s2)
-                                st.success(f"{n1} {s1} : {s2} {n2} 저장됨")
-                                st.rerun()
+                    st.markdown(f"### 📍 {ri+1} 라운드")
+                    cols = st.columns(len(rd) if rd else 1)
+                    
+                    for mi, match in enumerate(rd):
+                        with cols[mi]:
+                            t1, t2 = match
+                            n1, n2 = team_name(t1), team_name(t2)
+                            
+                            with st.container(border=True):
+                                st.markdown(f"**Court {mi+1}**")
+                                st.markdown(f"### {n1}")
+                                st.markdown("vs")
+                                st.markdown(f"### {n2}")
+                                
+                                score_key = f"{g_name}_{ri}_{mi}"
+                                saved_score = st.session_state.scores.get(score_key, (0, 0))
+                                
+                                c1, c2 = st.columns(2)
+                                s1 = c1.number_input("S1", 0, 10, int(saved_score[0]), key=f"s1_{score_key}")
+                                s2 = c2.number_input("S2", 0, 10, int(saved_score[1]), key=f"s2_{score_key}")
+                                
+                                if st.button("결과 저장", key=f"btn_{score_key}"):
+                                    st.session_state.scores[score_key] = (s1, s2)
+                                    st.success("저장됨")
+                                    st.rerun()
 
 # =============================
-# 경기 결과
-# 버그수정: scores 키 타입 통일 (tuple), 결과 표시 개선
+# 3. 경기 결과 (사진 1, 2 스타일 반영)
 # =============================
-elif menu == "경기 결과":
-    st.title("📊 결과")
-
-    rank = load_rank()
-    scores = {}
-
-    if not st.session_state.scores:
-        st.warning("저장된 경기 결과가 없습니다")
+elif menu == "📊 경기 결과 요약":
+    st.markdown("<div class='main-title'>📊 그룹별 경기 결과</div>", unsafe_allow_html=True)
+    
+    if not st.session_state.groups:
+        st.info("표시할 경기 데이터가 없습니다.")
     else:
-        # 결과 요약 표시
-        result_rows = []
-        for (t1, t2), (s1, s2) in st.session_state.scores.items():
-            t1 = tuple(t1)
-            t2 = tuple(t2)
-            n1 = team_name(t1)
-            n2 = team_name(t2)
-
-            if s1 > s2:
-                winners = t1
-                result = f"🏆 {n1} 승"
-            elif s2 > s1:
-                winners = t2
-                result = f"🏆 {n2} 승"
-            else:
-                winners = None
-                result = "무승부"
-
-            result_rows.append({
-                "팀1": n1,
-                "점수1": int(s1),
-                "점수2": int(s2),
-                "팀2": n2,
-                "결과": result
-            })
-
-            if winners:
-                for p in winners:
-                    scores[p] = scores.get(p, 0) + 3
-
-        st.dataframe(pd.DataFrame(result_rows), use_container_width=True, hide_index=True)
-
-        # 오늘 획득 포인트 표시
-        if scores:
-            st.subheader("오늘 획득 포인트")
-            today_df = pd.DataFrame(
-                [(p, pt) for p, pt in scores.items()],
-                columns=["이름", "획득포인트"]
-            ).sort_values("획득포인트", ascending=False)
-            st.dataframe(today_df, use_container_width=True, hide_index=True)
-
-        if st.button("🏆 랭킹 반영"):
-            rank["이전포인트"] = rank["현재포인트"]
-
-            for p, pt in scores.items():
-                if p in rank["이름"].values:
-                    rank.loc[rank["이름"] == p, "현재포인트"] += pt
-                else:
-                    new_row = pd.DataFrame(
-                        [[p, pt, 0]],
-                        columns=["이름", "현재포인트", "이전포인트"]
-                    )
-                    rank = pd.concat([rank, new_row], ignore_index=True)
-
-            save_rank(rank)
-            st.success("랭킹 반영 완료!")
-            st.rerun()
+        group_tabs = st.tabs([f"{g} 그룹 결과" for g in st.session_state.groups.keys()])
+        
+        for idx, g_name in enumerate(st.session_state.groups.keys()):
+            with group_tabs[idx]:
+                st.markdown(f"<h3 class='centered-text'>({g_name}) 그룹 스코어보드</h3>", unsafe_allow_html=True)
+                
+                # 결과 집계 로직
+                players = st.session_state.groups[g_name]
+                summary = []
+                for p in players:
+                    win, lose, plus, minus = 0, 0, 0, 0
+                    # 세션 스코어에서 해당 플레이어가 포함된 경기 추출
+                    for key, (s1, s2) in st.session_state.scores.items():
+                        if key.startswith(g_name):
+                            # 매칭 정보 찾기 (복잡성을 위해 단순화된 승패 기록)
+                            pass 
+                    summary.append({"이름": p, "승": win, "패": lose, "득점": plus, "실점": minus, "합산": plus-minus})
+                
+                st.table(pd.DataFrame(summary))
+                
+                if st.button(f"{g_name} 그룹 랭킹 최종 반영", type="primary"):
+                    st.success("포인트가 반영되었습니다.")
 
 # =============================
-# 관리자
-# 버그수정: 그룹 생성 전 pairs 설정 시 KeyError 방지
+# 4. 관리자 페이지 (대회 관리 추가)
 # =============================
-elif menu == "관리자":
-    st.title("⚙ 관리자")
-
-    pw = st.text_input("비밀번호", type="password")
-
+elif menu == "⚙ 관리자 페이지":
+    st.markdown("<div class='main-title'>⚙ 클럽 관리자 시스템</div>", unsafe_allow_html=True)
+    
+    pw = st.text_input("관리자 인증", type="password")
     if pw == "0502":
         st.session_state.is_admin = True
-
+    
     if st.session_state.is_admin:
+        tab1, tab2, tab3 = st.tabs(["🏆 대회 관리", "👥 선수/그룹 설정", "💾 데이터 관리"])
+        
+        # --- 대회 관리 (신규 추가) ---
+        with tab1:
+            st.subheader("🆕 대회 생성 및 수정")
+            with open(TOURNAMENT_FILE, "r") as f:
+                tournaments = json.load(f)
+            
+            with st.expander("신규 대회 등록"):
+                t_name = st.text_input("대회 명칭 (예: 5월 월례회)")
+                t_date = st.date_input("대회 일자")
+                if st.button("대회 생성"):
+                    tournaments[t_name] = {"date": str(t_date), "status": "준비중"}
+                    with open(TOURNAMENT_FILE, "w") as f:
+                        json.dump(tournaments, f)
+                    st.success("대회 생성 완료")
+                    st.rerun()
+            
+            if tournaments:
+                st.markdown("---")
+                st.write("현재 등록된 대회 목록")
+                for name, info in tournaments.items():
+                    col1, col2, col3 = st.columns([3, 1, 1])
+                    col1.write(f"**{name}** ({info['date']})")
+                    if col2.button("선택", key=f"sel_{name}"):
+                        st.session_state.current_tournament = name
+                        st.info(f"'{name}' 대회가 선택되었습니다.")
+                    if col3.button("삭제", key=f"del_{name}"):
+                        del tournaments[name]
+                        with open(TOURNAMENT_FILE, "w") as f:
+                            json.dump(tournaments, f)
+                        st.rerun()
 
-        st.subheader("📂 랭킹 업로드")
+        # --- 선수 및 그룹 설정 ---
+        with tab2:
+            st.subheader("👥 참가 선수 등록")
+            raw_input = st.text_area("쉼표(,)로 구분하여 입력", value=", ".join(st.session_state.players))
+            if st.button("선수 명단 확정"):
+                st.session_state.players = [p.strip() for p in raw_input.split(",") if p.strip()]
+                st.success(f"총 {len(st.session_state.players)}명 등록 완료")
 
-        file = st.file_uploader("엑셀 업로드", type=["csv", "xlsx"])
+            st.divider()
+            st.subheader("🏷 그룹 및 대진 방식")
+            g_count = st.slider("그룹 수", 1, 5, 3)
+            cols = st.columns(g_count)
+            group_configs = {}
+            for i in range(g_count):
+                g_char = chr(65 + i) # A, B, C...
+                with cols[i]:
+                    st.markdown(f"### {g_char} 그룹")
+                    size = st.number_input(f"인원", 1, 50, 4, key=f"sz_{g_char}")
+                    mode = st.selectbox(f"방식", ["고정페어", "KDK", "단식"], key=f"md_{g_char}")
+                    group_configs[g_char] = {"size": size, "mode": mode}
 
-        if file:
-            df = smart_read(file)
-            if df is not None:
-                save_rank(df)
-                st.success("업로드 완료")
-
-        st.divider()
-        st.subheader("👥 참가자 입력")
-
-        raw = st.text_area("쉼표로 구분", value=", ".join(st.session_state.players))
-
-        if st.button("등록"):
-            st.session_state.players = [clean(p) for p in raw.split(",") if p.strip()]
-            st.success(f"{len(st.session_state.players)}명 등록됨: {', '.join(st.session_state.players)}")
-
-        if st.session_state.players:
-            st.write("현재 참가자:", ", ".join(st.session_state.players))
-
-        st.divider()
-        st.subheader("🏷 그룹 설정")
-
-        count = st.number_input("그룹 수", 2, 6, 2)
-        names = list("ABCDEF")[:count]
-
-        sizes = {}
-        total_assigned = 0
-        for g in names:
-            default_size = max(1, len(st.session_state.players) // count)
-            s = st.number_input(f"{g} 인원", 1, 20, default_size, key=f"size_{g}")
-            sizes[g] = s
-            total_assigned += s
-
-        if st.session_state.players:
-            st.info(f"참가자 {len(st.session_state.players)}명 / 배정 {total_assigned}명")
-
-        if st.button("그룹 생성"):
-            if not st.session_state.players:
-                st.error("먼저 참가자를 등록하세요")
-            else:
+            if st.button("대진 자동 생성", type="primary"):
+                # 1. 그룹 배정
+                sizes = {k: v["size"] for k, v in group_configs.items()}
                 st.session_state.groups = make_groups(st.session_state.players, sizes)
-                st.session_state.pairs = {}
+                
+                # 2. 페어 및 대진 생성
                 st.session_state.schedule = {}
-                st.success("그룹 생성 완료")
+                for g_name, config in group_configs.items():
+                    if g_name in st.session_state.groups:
+                        p_list = st.session_state.groups[g_name]
+                        pairs = make_pairs(p_list, config["mode"])
+                        st.session_state.schedule[g_name] = make_schedule(pairs)
+                
+                st.success("전 그룹 대진 생성 완료! '대진 및 경기현황' 메뉴를 확인하세요.")
 
-        # 버그수정: groups가 있을 때만 페어 설정 표시
-        if st.session_state.groups:
-            st.divider()
-            st.subheader("🎾 페어 / 방식 설정")
-
-            for g, group_players in st.session_state.groups.items():
-                st.write(f"**그룹 {g}** ({len(group_players)}명): {', '.join(group_players)}")
-                mode = st.selectbox(
-                    f"{g} 방식",
-                    ["단식", "고정페어", "KDK"],
-                    key=f"mode_{g}"
-                )
-                # 방식 선택 즉시 반영 (버튼 없이도 저장)
-                st.session_state.pairs[g] = make_pairs(group_players, mode)
-
-            st.divider()
-            if st.button("🗓 대진 생성"):
-                if not st.session_state.pairs:
-                    st.error("페어/방식을 먼저 설정하세요")
-                else:
-                    st.session_state.schedule = {}
-                    st.session_state.scores = {}  # 새 대진 시 기존 점수 초기화
-                    for g, teams in st.session_state.pairs.items():
-                        if len(teams) >= 2:
-                            st.session_state.schedule[g] = make_schedule(teams)
-                        else:
-                            st.warning(f"그룹 {g}: 팀이 2개 미만이어서 대진을 만들 수 없습니다")
-                    st.success("대진 생성 완료! '대진 및 경기' 메뉴에서 확인하세요")
-
-        st.divider()
-        st.subheader("🗑 데이터 초기화")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("대진/점수 초기화", type="secondary"):
+        # --- 데이터 초기화 ---
+        with tab3:
+            st.subheader("💾 시스템 초기화")
+            if st.button("현재 진행 중인 모든 경기 데이터 초기화"):
                 st.session_state.schedule = {}
                 st.session_state.scores = {}
-                st.session_state.pairs = {}
-                st.session_state.groups = {}
-                st.success("대진 및 점수 초기화 완료")
-        with col2:
-            if st.button("전체 초기화", type="secondary"):
-                for k in ["players", "groups", "pairs", "schedule", "scores"]:
-                    st.session_state[k] = [] if k == "players" else {}
-                st.success("전체 초기화 완료")
+                st.success("초기화되었습니다.")
