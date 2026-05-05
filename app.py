@@ -45,11 +45,15 @@ def load_rank():
     if not os.path.exists(RANK_FILE):
         return pd.DataFrame(columns=["이름", "현재포인트"])
     df = pd.read_csv(RANK_FILE)
+    # 데이터 로드 시 포인트 숫자형 변환 및 정렬
     if "현재포인트" in df.columns:
         df["현재포인트"] = pd.to_numeric(df["현재포인트"], errors='coerce').fillna(0).astype(int)
     return df
 
 def save_rank(df):
+    # 저장 전 항상 포인트 기준 내림차순 정렬
+    if "현재포인트" in df.columns:
+        df = df.sort_values("현재포인트", ascending=False).reset_index(drop=True)
     df.to_csv(RANK_FILE, index=False)
 
 def load_history():
@@ -61,40 +65,36 @@ def team_name(t):
     return " & ".join(t) if len(t) > 1 else t[0]
 
 def process_uploaded_file(df):
-    """image_f3ccda.png 에러를 해결한 안전한 데이터 처리 함수"""
+    """순위 역전 및 컬럼 매핑 문제를 해결한 함수"""
     df.columns = [str(c).strip() for c in df.columns]
-    mapping = {}
+    
+    name_col = None
+    point_col = None
+    
     for c in df.columns:
         c_lower = c.lower()
         if any(kw in c_lower for kw in ['이름', '성함', 'name', '선수명']):
-            mapping[c] = '이름'
+            name_col = c
         elif any(kw in c_lower for kw in ['현재', '포인트', '점수', 'point', '랭킹']):
-            mapping[c] = '현재포인트'
+            point_col = c
             
-    if '이름' not in mapping.values():
+    if not name_col:
         return None
     
-    # 중복 컬럼 선택 방지 로직
-    selected_cols = []
-    seen_renamed = set()
-    for original, renamed in mapping.items():
-        if renamed not in seen_renamed:
-            selected_cols.append(original)
-            seen_renamed.add(renamed)
-            
-    final_df = df[selected_cols].copy()
-    final_df.columns = list(seen_renamed)
+    # 새로운 데이터프레임 구성 (컬럼 순서 고정)
+    new_df = pd.DataFrame()
+    new_df['이름'] = df[name_col].astype(str)
     
-    # 현재포인트 숫자 변환 (TypeError 방지용 1차원 Series 추출)
-    if '현재포인트' in final_df.columns:
-        target_series = final_df['현재포인트']
-        if isinstance(target_series, pd.DataFrame): 
-            target_series = target_series.iloc[:, 0]
-        final_df['현재포인트'] = pd.to_numeric(target_series, errors='coerce').fillna(0).astype(int)
+    if point_col:
+        # 1차원 데이터로 변환 후 숫자 처리
+        pts = df[point_col]
+        if isinstance(pts, pd.DataFrame): pts = pts.iloc[:, 0]
+        new_df['현재포인트'] = pd.to_numeric(pts, errors='coerce').fillna(0).astype(int)
     else:
-        final_df['현재포인트'] = 0
+        new_df['현재포인트'] = 0
         
-    return final_df
+    # 포인트 기준 내림차순 정렬 후 반환
+    return new_df.sort_values("현재포인트", ascending=False).reset_index(drop=True)
 
 def make_groups(players, sizes):
     rank_df = load_rank()
@@ -109,6 +109,7 @@ def make_groups(players, sizes):
         curr += s
     return groups
 
+# (이하 대진 생성 로직 동일...)
 def make_pairs(players, mode):
     temp = players[:]
     if mode == "KDK": random.shuffle(temp)
@@ -145,9 +146,12 @@ if menu == "🏆 랭킹보드":
     st.markdown("<div class='main-title'>DU-RYU TENNIS RANKING</div>", unsafe_allow_html=True)
     df = load_rank()
     if not df.empty:
+        # 포인트 내림차순 정렬 재확인
         df = df.sort_values("현재포인트", ascending=False).reset_index(drop=True)
+        # 순위 부여 (1부터 시작)
         df.insert(0, "순위", range(1, len(df)+1))
-        st.table(df)
+        # 컬럼 순서 명시: 순위 - 이름 - 현재포인트
+        st.table(df[["순위", "이름", "현재포인트"]])
     else: st.info("데이터가 없습니다. 관리자 센터에서 랭킹 데이터를 업로드해주세요.")
 
 elif menu == "📅 대진표/입력":
@@ -242,10 +246,15 @@ elif menu == "⚙ 관리자 센터":
                     df_raw = pd.read_excel(up_file) if up_file.name.endswith('xlsx') else pd.read_csv(up_file)
                     df_processed = process_uploaded_file(df_raw)
                     if df_processed is not None:
-                        st.dataframe(df_processed.head(3))
-                        if st.button("랭킹 데이터로 즉시 저장"):
+                        # 화면 표시용 (순위 포함)
+                        display_df = df_processed.copy()
+                        display_df.insert(0, "순위", range(1, len(display_df)+1))
+                        st.write("업로드 데이터 미리보기 (정렬됨)")
+                        st.dataframe(display_df.head(10))
+                        
+                        if st.button("랭킹 데이터로 최종 저장"):
                             save_rank(df_processed)
-                            st.success("랭킹 정보가 업데이트되었습니다.")
+                            st.success("랭킹 정보가 업데이트되었습니다!")
                     else:
                         st.error("'이름' 컬럼을 찾을 수 없습니다.")
                 except Exception as e:
@@ -288,6 +297,7 @@ elif menu == "⚙ 관리자 센터":
                             "이름": p_name, "순위": rank_pos, "승": s_vals["승"], "득실": s_vals["득실"]
                         })
                 
+                # 정렬 후 저장
                 save_rank(rank)
                 old_history = load_history()
                 new_hist = pd.concat([old_history, pd.DataFrame(history_data)], ignore_index=True)
