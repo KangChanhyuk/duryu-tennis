@@ -60,24 +60,44 @@ def load_history():
 def team_name(t):
     return " & ".join(t) if len(t) > 1 else t[0]
 
-def process_uploaded_file(df):
+def def process_uploaded_file(df):
+    # 컬럼명 양끝 공백 제거
     df.columns = [str(c).strip() for c in df.columns]
+    
     mapping = {}
     for c in df.columns:
         c_lower = c.lower()
-        if any(kw in c_lower for kw in ['이름', '성함', 'name', '선수명']): mapping[c] = '이름'
-        elif any(kw in c_lower for kw in ['현재', '포인트', '점수', 'point', '랭킹']): mapping[c] = '현재포인트'
+        if any(kw in c_lower for kw in ['이름', '성함', 'name', '선수명']):
+            mapping[c] = '이름'
+        elif any(kw in c_lower for kw in ['현재', '포인트', '점수', 'point', '랭킹']):
+            mapping[c] = '현재포인트'
             
-    if '이름' not in mapping.values(): return None
+    if '이름' not in mapping.values():
+        return None
     
-    df = df.rename(columns=mapping)
-    if '현재포인트' in df.columns:
-        # 오류 해결: Series 단위로 변환
-        df['현재포인트'] = pd.to_numeric(df['현재포인트'], errors='coerce').fillna(0).astype(int)
+    # 필요한 컬럼만 선택하여 복사 (중복 컬럼 방지)
+    selected_cols = []
+    new_names = []
+    for original, renamed in mapping.items():
+        if renamed not in new_names: # 이미 맵핑된 이름은 중복 추가 안함
+            selected_cols.append(original)
+            new_names.append(renamed)
+            
+    final_df = df[selected_cols].copy()
+    final_df.columns = new_names
+    
+    # 문제의 발생 지점: Series를 명시적으로 지정하여 숫자 변환
+    if '현재포인트' in final_df.columns:
+        # 단일 컬럼임을 보장하고 에러 방지
+        points_series = final_df['현재포인트']
+        if isinstance(points_series, pd.DataFrame): # 혹시라도 여러 컬럼이 잡힌 경우 첫 번째만 사용
+            points_series = points_series.iloc[:, 0]
+        
+        final_df['현재포인트'] = pd.to_numeric(points_series, errors='coerce').fillna(0).astype(int)
     else:
-        df['현재포인트'] = 0
+        final_df['현재포인트'] = 0
     
-    return df
+    return final_df
 
 def make_groups(players, sizes):
     rank_df = load_rank()
