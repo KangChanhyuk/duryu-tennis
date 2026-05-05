@@ -60,10 +60,9 @@ def load_history():
 def team_name(t):
     return " & ".join(t) if len(t) > 1 else t[0]
 
-def def process_uploaded_file(df):
-    # 컬럼명 양끝 공백 제거
+def process_uploaded_file(df):
+    """image_f3ccda.png 에러를 해결한 안전한 데이터 처리 함수"""
     df.columns = [str(c).strip() for c in df.columns]
-    
     mapping = {}
     for c in df.columns:
         c_lower = c.lower()
@@ -75,28 +74,26 @@ def def process_uploaded_file(df):
     if '이름' not in mapping.values():
         return None
     
-    # 필요한 컬럼만 선택하여 복사 (중복 컬럼 방지)
+    # 중복 컬럼 선택 방지 로직
     selected_cols = []
-    new_names = []
+    seen_renamed = set()
     for original, renamed in mapping.items():
-        if renamed not in new_names: # 이미 맵핑된 이름은 중복 추가 안함
+        if renamed not in seen_renamed:
             selected_cols.append(original)
-            new_names.append(renamed)
+            seen_renamed.add(renamed)
             
     final_df = df[selected_cols].copy()
-    final_df.columns = new_names
+    final_df.columns = list(seen_renamed)
     
-    # 문제의 발생 지점: Series를 명시적으로 지정하여 숫자 변환
+    # 현재포인트 숫자 변환 (TypeError 방지용 1차원 Series 추출)
     if '현재포인트' in final_df.columns:
-        # 단일 컬럼임을 보장하고 에러 방지
-        points_series = final_df['현재포인트']
-        if isinstance(points_series, pd.DataFrame): # 혹시라도 여러 컬럼이 잡힌 경우 첫 번째만 사용
-            points_series = points_series.iloc[:, 0]
-        
-        final_df['현재포인트'] = pd.to_numeric(points_series, errors='coerce').fillna(0).astype(int)
+        target_series = final_df['현재포인트']
+        if isinstance(target_series, pd.DataFrame): 
+            target_series = target_series.iloc[:, 0]
+        final_df['현재포인트'] = pd.to_numeric(target_series, errors='coerce').fillna(0).astype(int)
     else:
         final_df['현재포인트'] = 0
-    
+        
     return final_df
 
 def make_groups(players, sizes):
@@ -151,7 +148,7 @@ if menu == "🏆 랭킹보드":
         df = df.sort_values("현재포인트", ascending=False).reset_index(drop=True)
         df.insert(0, "순위", range(1, len(df)+1))
         st.table(df)
-    else: st.info("데이터가 없습니다. 관리자 센터에서 엑셀을 업로드해주세요.")
+    else: st.info("데이터가 없습니다. 관리자 센터에서 랭킹 데이터를 업로드해주세요.")
 
 elif menu == "📅 대진표/입력":
     st.markdown("<div class='main-title'>MATCH SCHEDULE</div>", unsafe_allow_html=True)
@@ -241,17 +238,22 @@ elif menu == "⚙ 관리자 센터":
             st.subheader("📁 엑셀 업로드")
             up_file = st.file_uploader("파일 선택", type=["csv", "xlsx"])
             if up_file:
-                df_raw = pd.read_excel(up_file) if up_file.name.endswith('xlsx') else pd.read_csv(up_file)
-                df_processed = process_uploaded_file(df_raw)
-                if df_processed is not None:
-                    st.dataframe(df_processed.head(3))
-                    if st.button("랭킹 즉시 저장"):
-                        save_rank(df_processed)
-                        st.success("업데이트 완료!")
+                try:
+                    df_raw = pd.read_excel(up_file) if up_file.name.endswith('xlsx') else pd.read_csv(up_file)
+                    df_processed = process_uploaded_file(df_raw)
+                    if df_processed is not None:
+                        st.dataframe(df_processed.head(3))
+                        if st.button("랭킹 데이터로 즉시 저장"):
+                            save_rank(df_processed)
+                            st.success("랭킹 정보가 업데이트되었습니다.")
+                    else:
+                        st.error("'이름' 컬럼을 찾을 수 없습니다.")
+                except Exception as e:
+                    st.error(f"파일 처리 중 오류 발생: {e}")
 
             st.divider()
-            st.subheader("🏆 경기 결과 확정")
-            if st.button("승점 반영 및 대회 기록 저장"):
+            st.subheader("🏆 경기 결과 확정 및 기록")
+            if st.button("승점 반영 및 현재 대회를 기록에 저장"):
                 rank = load_rank()
                 history_data = []
                 for g in st.session_state.groups.keys():
@@ -287,13 +289,15 @@ elif menu == "⚙ 관리자 센터":
                         })
                 
                 save_rank(rank)
-                new_hist = pd.concat([load_history(), pd.DataFrame(history_data)], ignore_index=True)
+                old_history = load_history()
+                new_hist = pd.concat([old_history, pd.DataFrame(history_data)], ignore_index=True)
                 new_hist.to_csv(HISTORY_FILE, index=False)
-                st.success("승점 반영 및 기록 저장이 완료되었습니다!")
+                st.success("승점 반영 및 역대 기록 저장이 완료되었습니다!")
 
         with tab3:
-            if st.button("전체 초기화"):
+            if st.button("모든 데이터 초기화"):
                 if os.path.exists(RANK_FILE): os.remove(RANK_FILE)
+                if os.path.exists(HISTORY_FILE): os.remove(HISTORY_FILE)
                 st.session_state.clear()
                 init_state()
                 st.rerun()
