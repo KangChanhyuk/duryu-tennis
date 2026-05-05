@@ -56,7 +56,7 @@ def load_rank():
         return pd.DataFrame(columns=["이름", "현재포인트"])
     df = pd.read_csv(RANK_FILE)
     if "현재포인트" in df.columns:
-        df["현재포인트"] = pd.to_numeric(df["현재포인트"]).fillna(0).astype(int)
+        df["현재포인트"] = pd.to_numeric(df["현재포인트"], errors='coerce').fillna(0).astype(int)
     return df
 
 def save_rank(df):
@@ -65,11 +65,8 @@ def save_rank(df):
 def team_name(t):
     return " & ".join(t) if len(t) > 1 else t[0]
 
-# 엑셀/CSV 컬럼 유연 매핑 함수
 def process_uploaded_file(df):
-    # 1. 컬럼명 정리 (공백 제거 등)
     df.columns = [str(c).strip() for c in df.columns]
-    
     mapping = {}
     for c in df.columns:
         c_lower = c.lower()
@@ -81,24 +78,21 @@ def process_uploaded_file(df):
     if '이름' not in mapping.values():
         return None
     
-    # 컬럼 이름 변경 (원본 컬럼들도 유지됨)
     df = df.rename(columns=mapping)
-    
-    # 현재포인트가 없으면 0으로 생성
     if '현재포인트' not in df.columns:
         df['현재포인트'] = 0
+    else:
+        df['현재포인트'] = pd.to_numeric(df['현재포인트'], errors='coerce').fillna(0).astype(int)
     
     return df
 
 def make_groups(players, sizes):
     rank_df = load_rank()
-    # 랭킹 데이터가 있으면 점수순 정렬, 없으면 입력순
     if not rank_df.empty and '이름' in rank_df.columns:
         rank_order = rank_df.sort_values("현재포인트", ascending=False)["이름"].tolist()
         ordered = [p for p in rank_order if p in players] + [p for p in players if p not in rank_order]
     else:
         ordered = players
-        
     groups = {}
     curr = 0
     for g, s in sizes.items():
@@ -106,7 +100,6 @@ def make_groups(players, sizes):
         curr += s
     return groups
 
-# [나머지 대진 생성 로직 (make_pairs, make_schedule)은 이전과 동일하게 유지]
 def make_pairs(players, mode):
     temp = players[:]
     if mode == "KDK": random.shuffle(temp)
@@ -143,11 +136,9 @@ if menu == "🏆 랭킹보드":
     st.markdown("<div class='main-title'>DU-RYU TENNIS RANKING</div>", unsafe_allow_html=True)
     df = load_rank()
     if not df.empty:
-        # 현재포인트 기준 내림차순 정렬
-        if "현재포인트" in df.columns:
-            df = df.sort_values("현재포인트", ascending=False).reset_index(drop=True)
+        df = df.sort_values("현재포인트", ascending=False).reset_index(drop=True)
         df.insert(0, "순위", range(1, len(df)+1))
-        st.table(df) # 중앙 정렬 스타일이 적용된 테이블
+        st.table(df)
     else:
         st.info("데이터가 없습니다. 관리자 센터에서 엑셀을 업로드해주세요.")
 
@@ -181,7 +172,6 @@ elif menu == "📅 대진표/입력":
 
 elif menu == "📊 경기결과":
     st.markdown("<div class='main-title'>MATCH RESULTS</div>", unsafe_allow_html=True)
-    # [경기 결과 요약 로직 - 이전 버전과 동일]
     if not st.session_state.scores:
         st.info("입력된 결과가 없습니다.")
     else:
@@ -229,32 +219,63 @@ elif menu == "⚙ 관리자 센터":
 
         with tab2:
             st.subheader("📁 엑셀 업로드 (랭킹 갱신)")
-            st.write("엑셀에 **'이름'** 컬럼만 있으면 나머지 정보는 그대로 유지됩니다.")
             up_file = st.file_uploader("파일 업로드", type=["csv", "xlsx"])
             if up_file:
-                df_raw = pd.read_excel(up_file) if up_file.name.endswith('xlsx') else pd.read_csv(up_file)
-                df_processed = process_uploaded_file(df_raw)
-                
-                if df_processed is not None:
-                    st.write("데이터 인식 성공!")
-                    st.dataframe(df_processed.head(5))
-                    if st.button("이 데이터로 랭킹 마스터 저장"):
-                        save_rank(df_processed)
-                        st.success("랭킹 파일이 성공적으로 교체되었습니다.")
-                else:
-                    st.error("'이름' 또는 '성함' 컬럼을 찾을 수 없습니다. 엑셀 파일을 확인해주세요.")
+                try:
+                    df_raw = pd.read_excel(up_file) if up_file.name.endswith('xlsx') else pd.read_csv(up_file)
+                    df_processed = process_uploaded_file(df_raw)
+                    if df_processed is not None:
+                        st.dataframe(df_processed.head(5))
+                        if st.button("업로드 데이터로 랭킹 즉시 저장"):
+                            save_rank(df_processed)
+                            st.success("랭킹이 업데이트되었습니다! '🏆 랭킹보드'에서 확인하세요.")
+                    else:
+                        st.error("'이름' 컬럼을 찾을 수 없습니다.")
+                except Exception as e:
+                    st.error(f"파일 처리 중 오류 발생: {e}")
 
             st.divider()
-            if st.button("현재 경기 승점(3점) 랭킹에 반영"):
+            st.subheader("📝 오늘 경기 결과 승점 반영")
+            st.info("고정페어: 1위(7점), 2위(5점), 3위(3점), 나머지(1점)\nKDK/단식: 1-2위(7점), 3-4위(5점), 5-6위(3점), 나머지(1점)")
+            
+            if st.button("경기 결과에 따른 승점 확정 및 저장"):
                 rank = load_rank()
-                for (t1, t2), (s1, s2) in st.session_state.scores.items():
-                    winner = t1 if s1 > s2 else (t2 if s2 > s1 else None)
-                    if winner:
-                        for p in winner:
-                            if p in rank["이름"].values:
-                                rank.loc[rank["이름"] == p, "현재포인트"] += 3
+                update_count = 0
+                
+                for g in st.session_state.groups.keys():
+                    stats = {}
+                    # 특정 그룹에 속한 선수들만 필터링하여 순위 계산
+                    for (t1, t2), (s1, s2) in st.session_state.scores.items():
+                        if t1[0] not in st.session_state.groups[g]: continue
+                        for team, my_s, op_s in [(t1, s1, s2), (t2, s2, s1)]:
+                            for n in team:
+                                if n not in stats: stats[n] = {"승":0, "득실":0}
+                                if my_s > op_s: stats[n]["승"] += 1
+                                stats[n]["득실"] += (my_s - op_s)
+                    
+                    # 순위 정렬
+                    sorted_players = sorted(stats.items(), key=lambda x: (x[1]['승'], x[1]['득실']), reverse=True)
+                    
+                    mode = st.session_state.modes[g]
+                    for idx, (p_name, _) in enumerate(sorted_players):
+                        rank_pos = idx + 1
+                        points = 1 # 기본 1점
+                        
+                        if mode == "고정페어":
+                            if rank_pos == 1: points = 7
+                            elif rank_pos == 2: points = 5
+                            elif rank_pos == 3: points = 3
+                        else: # KDK, 단식
+                            if rank_pos <= 2: points = 7
+                            elif rank_pos <= 4: points = 5
+                            elif rank_pos <= 6: points = 3
+                        
+                        if p_name in rank["이름"].values:
+                            rank.loc[rank["이름"] == p_name, "현재포인트"] += points
+                            update_count += 1
+                            
                 save_rank(rank)
-                st.success("포인트가 마스터 파일에 저장되었습니다.")
+                st.success(f"총 {update_count}명의 선수에게 승점이 반영되었습니다.")
 
         with tab3:
             if st.button("전체 데이터 초기화"):
