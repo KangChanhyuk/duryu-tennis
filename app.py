@@ -451,7 +451,7 @@ def distribute_groups(p_list, g_configs):
                 player_ptr += 1
 
     # 그룹 내 배열:
-    # - 고정페어: 1위&최하위, 2위&차하위 … 순으로 페어 구성
+    # - 고정페어: 1위&최하위, 2위&차하위 ... 순으로 페어 구성
     # - KDK/단식: 랜덤 셔플
     for gn in g_names:
         gp = filled[gn]
@@ -1375,7 +1375,7 @@ elif menu == "⚙️ 관리자 센터":
                         st.markdown(f"""
                         <div class='info-box'>
                           <strong>고정페어 방식 ({sz}명, {gc}게임)</strong>
-                          <p>• 랭킹 1위 &amp; 최하위, 2위 &amp; 차하위 … 순으로 페어 구성</p>
+                          <p>• 랭킹 1위 &amp; 최하위, 2위 &amp; 차하위 ... 순으로 페어 구성</p>
                           <p>• 팀 단위 리그전 · 팀 순위로 결과 산정</p>
                         </div>
                         """, unsafe_allow_html=True)
